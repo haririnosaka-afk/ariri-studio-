@@ -1,54 +1,93 @@
 import { NextRequest, NextResponse } from 'next/server';
 const sleep = (ms:number)=> new Promise(r=>setTimeout(r,ms));
-const BASES = ['https://www.runninghub.ai/openapi/v2','https://www.runninghub.cn/openapi/v2'];
-// INI ADALAH ROUTE.TS VERSI SIMPLE - TARO DI app/api/generate/route.ts (yang ada di screenshot)
-// Jadi kamu ga perlu bikin folder workflow lagi!
-// Key 1643ccb0... kamu bisa langsung pakai disini!
+
+const ENDPOINTS = [
+  'https://www.runninghub.ai/openapi/v2/bytedance/seedance-2.5-token/image-to-video',
+  'https://www.runninghub.ai/openapi/v2/bytedance/seedance-2.5-token/multimodal-video',
+  'https://www.runninghub.ai/openapi/v2/bytedance/seedance-2.0-token/image-to-video',
+  'https://www.runninghub.cn/openapi/v2/bytedance/seedance-2.5-token/image-to-video',
+  'https://www.runninghub.cn/openapi/v2/bytedance/seedance-2.5-token/multimodal-video',
+];
+
 export async function POST(req: NextRequest){
   try{
-    const { prompt, duration=10, image_urls=[], apiKey, webappId } = await req.json();
-    const finalWebappId = webappId || '2004066004755988481'; // ID public bawaan
-    const finalKey = apiKey || (process.env.RUNNINGHUB_API_KEYS||'').split(',')[0];
-    
-    if(!finalKey) return NextResponse.json({error:'API Key kosong - paste key 1643ccb0... kamu di Settings'}, {status:400});
+    const { prompt, duration=10, image_urls=[], apiKey } = await req.json();
+    const key = apiKey || (process.env.RUNNINGHUB_API_KEYS||'').split(',')[0];
+    if(!key) return NextResponse.json({error:'Key kosong - paste 1643ccb0...'}, {status:400});
     if(!prompt) return NextResponse.json({error:'Prompt kosong'}, {status:400});
 
     let lastErr = '';
-    for(const base of BASES){
+    for(const endpoint of ENDPOINTS){
       try{
-        const url1 = `${base}/run/ai-app/${finalWebappId}`;
-        const nodeInfoList = [
-          { nodeId: '6', fieldName: 'text', fieldValue: prompt },
-          { nodeId: '6', fieldName: 'prompt', fieldValue: prompt },
-          { nodeId: '1', fieldName: 'prompt', fieldValue: prompt },
-          { nodeId: '5', fieldName: 'image', fieldValue: image_urls[0] || '' },
-          { nodeId: '3', fieldName: 'image', fieldValue: image_urls[0] || '' },
-        ].filter(n=>n.fieldValue);
-        const res1 = await fetch(url1, {
+        // Payload untuk token endpoint (bukan global-token)
+        const payload:any = {
+          prompt,
+          duration: duration,
+          duration_seconds: duration,
+          seconds: duration,
+          image_url: image_urls[0] || '',
+          first_frame_image: image_urls[0] || '',
+          images: image_urls,
+          image_urls: image_urls,
+          resolution: '720p',
+          aspect_ratio: '16:9',
+          enable_audio: true,
+        };
+
+        const res = await fetch(endpoint, {
           method:'POST',
-          headers:{ 'Authorization': `Bearer ${finalKey}`, 'Content-Type':'application/json' },
-          body: JSON.stringify({ nodeInfoList })
+          headers:{
+            'Authorization': `Bearer ${key}`,
+            'Content-Type':'application/json',
+            'apikey': key
+          },
+          body: JSON.stringify(payload)
         });
-        const j1:any = await res1.json().catch(()=>({}));
-        const taskId1 = j1.data?.taskId || j1.taskId || j1.data?.id;
-        if(res1.ok && taskId1){
+
+        const j:any = await res.json().catch(async()=>{
+          const t = await res.text().catch(()=>'' );
+          return { raw: t.slice(0,500) };
+        });
+
+        const taskId = j.data?.taskId || j.taskId || j.data?.id;
+        
+        if(res.ok && taskId){
+          // Polling pakai /query
+          const base = endpoint.includes('runninghub.cn') ? 'https://www.runninghub.cn/openapi/v2' : 'https://www.runninghub.ai/openapi/v2';
           for(let i=0;i<90;i++){
             await sleep(4000);
-            const qRes = await fetch(`${base}/query?taskId=${taskId1}`, { headers:{ 'Authorization': `Bearer ${finalKey}` } });
-            const qJ:any = await qRes.json().catch(()=>({}));
-            const status = qJ.data?.status || qJ.status;
-            if(status==='SUCCESS' || status==='COMPLETED' || qJ.data?.result){
-              const videoUrl = qJ.data?.result?.videoUrl || qJ.data?.result?.url || qJ.data?.result?.[0]?.url || qJ.data?.output?.[0] || '';
-              if(videoUrl) return NextResponse.json({ video:{url: videoUrl}, taskId: taskId1 });
-            }
-            if(status==='FAILED') { lastErr = qJ.data?.error || 'FAILED'; break; }
+            try{
+              const qRes = await fetch(`${base}/query?taskId=${taskId}`, {
+                headers:{ 'Authorization': `Bearer ${key}`, 'apikey': key }
+              });
+              const qJ:any = await qRes.json().catch(()=>({}));
+              const status = qJ.data?.status || qJ.status;
+              const result = qJ.data?.result || qJ.data?.results;
+              if(status==='SUCCESS' || status==='COMPLETED'){
+                const videoUrl = result?.videoUrl || result?.video_url || result?.url || result?.[0]?.url || result?.output?.[0] || qJ.data?.output?.[0] || '';
+                if(videoUrl) return NextResponse.json({ video:{url: videoUrl}, taskId, endpoint });
+              }
+              if(status==='FAILED'){
+                lastErr = qJ.data?.error || qJ.data?.failedReason || 'FAILED';
+                break;
+              }
+            }catch{}
           }
+          lastErr = `Task ${taskId} tidak selesai`;
         } else {
-          lastErr = j1.msg || j1.message || `${res1.status} - ${JSON.stringify(j1).slice(0,300)}`;
+          lastErr = j.msg || j.message || j.errorMessage || j.error || JSON.stringify(j).slice(0,500);
+          // Kalau error 1014 enterprise, coba endpoint lain
+          if(lastErr.includes('1014') || lastErr.includes('Enterprise') || lastErr.includes('restricted')){
+            continue;
+          }
+          // Kalau endpoint ga ada, coba next
+          if(res.status===404) continue;
         }
       }catch(e:any){ lastErr = e.message; }
     }
-    return NextResponse.json({error:`Gagal. Key ${finalKey.slice(0,8)}*** mungkin saldo habis atau WebApp ID ${finalWebappId} ga aktif. Error: ${lastErr}`}, {status:500});
+
+    return NextResponse.json({error:`Gagal semua endpoint token. Key ${key.slice(0,8)}*** mungkin saldo habis atau membership belum Personal. Coba top-up $5 di runninghub.ai -> Billing. Last: ${lastErr}`}, {status:500});
+
   }catch(e:any){
     return NextResponse.json({error:e.message}, {status:500});
   }
