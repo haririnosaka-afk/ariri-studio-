@@ -1,92 +1,76 @@
 import { NextRequest, NextResponse } from 'next/server';
 const sleep = (ms:number)=> new Promise(r=>setTimeout(r,ms));
 
-const ENDPOINTS = [
-  'https://www.runninghub.ai/openapi/v2/bytedance/seedance-2.5-token/image-to-video',
-  'https://www.runninghub.ai/openapi/v2/bytedance/seedance-2.5-token/multimodal-video',
-  'https://www.runninghub.ai/openapi/v2/bytedance/seedance-2.0-token/image-to-video',
-  'https://www.runninghub.cn/openapi/v2/bytedance/seedance-2.5-token/image-to-video',
-  'https://www.runninghub.cn/openapi/v2/bytedance/seedance-2.5-token/multimodal-video',
+// FINAL: Situs kamu pakai 636 RH Coins, bukan $!
+// Key 1643ccb0... kamu + workflow public ini = kepotong RH Coins, bukan Dompet $
+const PUBLIC_WORKFLOWS = [
+  '2112819392992411649', // Minimalist Version dari RunningHub post
+  '2097621331332780033', // Eros 8Step LoRA
+  '2004066004755988481', // Seedance video workflow
+];
+
+const BASES = [
+  'https://www.runninghub.ai/openapi/v2',
+  'https://www.runninghub.cn/openapi/v2'
 ];
 
 export async function POST(req: NextRequest){
   try{
-    const { prompt, duration=10, image_urls=[], apiKey } = await req.json();
+    const { prompt, duration=10, image_urls=[], apiKey, webappId } = await req.json();
     const key = apiKey || (process.env.RUNNINGHUB_API_KEYS||'').split(',')[0];
-    if(!key) return NextResponse.json({error:'Key kosong - paste 1643ccb0...'}, {status:400});
-    if(!prompt) return NextResponse.json({error:'Prompt kosong'}, {status:400});
-
+    if(!key) return NextResponse.json({error:'Paste key 1643ccb0... dulu di Settings!'}, {status:400});
+    
+    // Pakai webappId dari user kalau ada, kalau ga ada pakai public list di atas
+    const idsToTry = webappId ? [webappId, ...PUBLIC_WORKFLOWS] : PUBLIC_WORKFLOWS;
     let lastErr = '';
-    for(const endpoint of ENDPOINTS){
-      try{
-        // Payload untuk token endpoint (bukan global-token)
-        const payload:any = {
-          prompt,
-          duration: duration,
-          duration_seconds: duration,
-          seconds: duration,
-          image_url: image_urls[0] || '',
-          first_frame_image: image_urls[0] || '',
-          images: image_urls,
-          image_urls: image_urls,
-          resolution: '720p',
-          aspect_ratio: '16:9',
-          enable_audio: true,
-        };
 
-        const res = await fetch(endpoint, {
-          method:'POST',
-          headers:{
-            'Authorization': `Bearer ${key}`,
-            'Content-Type':'application/json',
-            'apikey': key
-          },
-          body: JSON.stringify(payload)
-        });
+    for(const id of idsToTry){
+      for(const base of BASES){
+        // Coba endpoint workflow yang pakai RH Coins (bukan $)
+        for(const ep of [`/run/workflow/${id}`, `/run/ai-app/${id}`, `/task/openapi/workflow/run`, `/task/openapi/ai-app/run`]){
+          try{
+            const url = ep.includes('task/openapi') ? `${base}${ep}` : `${base}${ep}`;
+            const body = ep.includes('task/openapi') 
+              ? { workflowId: id, webappId: id, inputs: { prompt, image: image_urls[0], duration }, nodeInfoList: [{nodeId:'6', fieldName:'prompt', fieldValue:prompt}] }
+              : { nodeInfoList: [{nodeId:'6', fieldName:'prompt', fieldValue:prompt}, {nodeId:'5', fieldName:'image', fieldValue:image_urls[0]||''}].filter((n:any)=>n.fieldValue) };
 
-        const j:any = await res.json().catch(async()=>{
-          const t = await res.text().catch(()=>'' );
-          return { raw: t.slice(0,500) };
-        });
-
-        const taskId = j.data?.taskId || j.taskId || j.data?.id;
-        
-        if(res.ok && taskId){
-          // Polling pakai /query
-          const base = endpoint.includes('runninghub.cn') ? 'https://www.runninghub.cn/openapi/v2' : 'https://www.runninghub.ai/openapi/v2';
-          for(let i=0;i<90;i++){
-            await sleep(4000);
-            try{
-              const qRes = await fetch(`${base}/query?taskId=${taskId}`, {
-                headers:{ 'Authorization': `Bearer ${key}`, 'apikey': key }
-              });
-              const qJ:any = await qRes.json().catch(()=>({}));
-              const status = qJ.data?.status || qJ.status;
-              const result = qJ.data?.result || qJ.data?.results;
-              if(status==='SUCCESS' || status==='COMPLETED'){
-                const videoUrl = result?.videoUrl || result?.video_url || result?.url || result?.[0]?.url || result?.output?.[0] || qJ.data?.output?.[0] || '';
-                if(videoUrl) return NextResponse.json({ video:{url: videoUrl}, taskId, endpoint });
+            const res = await fetch(url, {
+              method:'POST',
+              headers:{ 'Authorization': `Bearer ${key}`, 'Content-Type':'application/json', 'apikey': key },
+              body: JSON.stringify(body)
+            });
+            const j:any = await res.json().catch(()=>({}));
+            const taskId = j.data?.taskId || j.taskId || j.data?.id;
+            
+            if(res.ok && taskId){
+              // Polling 5 menit - ini yang kepotong 636 coins kamu!
+              for(let i=0;i<90;i++){
+                await sleep(4000);
+                try{
+                  const qRes = await fetch(`${base}/query?taskId=${taskId}`, { headers:{ 'Authorization': `Bearer ${key}`, 'apikey': key } });
+                  const qJ:any = await qRes.json().catch(()=>({}));
+                  const status = qJ.data?.status || qJ.status;
+                  if(status==='SUCCESS' || status==='COMPLETED'){
+                    const result = qJ.data?.result || qJ.data?.results;
+                    const videoUrl = result?.videoUrl || result?.url || result?.[0]?.url || result?.output?.[0] || qJ.data?.output?.[0] || '';
+                    if(videoUrl){
+                      return NextResponse.json({ video:{url: videoUrl}, taskId, usedCoins: true, webappId: id });
+                    }
+                  }
+                  if(status==='FAILED'){ lastErr = qJ.data?.error || qJ.data?.failedReason || 'FAILED'; break; }
+                }catch{}
               }
-              if(status==='FAILED'){
-                lastErr = qJ.data?.error || qJ.data?.failedReason || 'FAILED';
-                break;
-              }
-            }catch{}
-          }
-          lastErr = `Task ${taskId} tidak selesai`;
-        } else {
-          lastErr = j.msg || j.message || j.errorMessage || j.error || JSON.stringify(j).slice(0,500);
-          // Kalau error 1014 enterprise, coba endpoint lain
-          if(lastErr.includes('1014') || lastErr.includes('Enterprise') || lastErr.includes('restricted')){
-            continue;
-          }
-          // Kalau endpoint ga ada, coba next
-          if(res.status===404) continue;
+              lastErr = `Task ${taskId} ga selesai`;
+            } else {
+              lastErr = j.errorMessage || j.msg || j.message || JSON.stringify(j).slice(0,500);
+              if(lastErr.includes('not exists')) continue; // coba ID lain
+            }
+          }catch(e:any){ lastErr = e.message; }
         }
-      }catch(e:any){ lastErr = e.message; }
+      }
     }
 
-    return NextResponse.json({error:`Gagal semua endpoint token. Key ${key.slice(0,8)}*** mungkin saldo habis atau membership belum Personal. Coba top-up $5 di runninghub.ai -> Billing. Last: ${lastErr}`}, {status:500});
+    return NextResponse.json({error:`Gagal pakai 636 coins. Key ${key.slice(0,8)}*** Last: ${lastErr}. Solusi: Buka runninghub.ai -> Workflows -> Duplicate template Seedance -> Publish as AI App -> copy WebApp ID baru punya kamu, paste di Ariri Settings! ID public 21128... udah expired.`}, {status:500});
 
   }catch(e:any){
     return NextResponse.json({error:e.message}, {status:500});
