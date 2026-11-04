@@ -1,154 +1,67 @@
 import { NextRequest, NextResponse } from 'next/server';
 const sleep = (ms:number)=> new Promise(r=>setTimeout(r,ms));
 
-// WORKFLOW JSON Seedance yang langsung pakai 636 coins - tanpa WebApp ID!
-const SEEDANCE_WORKFLOW = {
-  "last_node_id": 15,
-  "last_link_id": 10,
-  "nodes": [
-    {
-      "id": 1,
-      "type": "LoadImage",
-      "pos": [0, 0],
-      "size": {"0": 315, "1": 314},
-      "flags": {},
-      "order": 0,
-      "mode": 0,
-      "inputs": [],
-      "outputs": [{"name": "IMAGE", "type": "IMAGE", "links": [1]}],
-      "properties": {"Node name for S&R": "LoadImage"},
-      "widgets_values": ["https://example.com/image.jpg"]
-    },
-    {
-      "id": 6,
-      "type": "CLIPTextEncode",
-      "pos": [400, 100],
-      "size": {"0": 400, "1": 200},
-      "flags": {},
-      "order": 1,
-      "mode": 0,
-      "inputs": [{"name": "clip", "type": "CLIP", "link": null}],
-      "outputs": [{"name": "CONDITIONING", "type": "CONDITIONING", "links": null}],
-      "properties": {"Node name for S&R": "Prompt"},
-      "widgets_values": ["PROMPT_PLACEHOLDER"]
-    },
-    {
-      "id": 10,
-      "type": "Seedance_2_5_I2V",
-      "pos": [800, 100],
-      "size": {"0": 400, "1": 300},
-      "flags": {},
-      "order": 2,
-      "mode": 0,
-      "inputs": [
-        {"name": "image", "type": "IMAGE", "link": 1},
-        {"name": "prompt", "type": "STRING", "link": 2}
-      ],
-      "outputs": [{"name": "VIDEO", "type": "VIDEO", "links": [3]}],
-      "properties": {"Node name for S&R": "Seedance 2.5"},
-      "widgets_values": [10, "720p", true]
-    },
-    {
-      "id": 11,
-      "type": "SaveVideo",
-      "pos": [1200, 100],
-      "size": {"0": 300, "1": 100},
-      "flags": {},
-      "order": 3,
-      "mode": 0,
-      "inputs": [{"name": "video", "type": "VIDEO", "link": 3}],
-      "outputs": [],
-      "properties": {"Node name for S&R": "SaveVideo"}
-    }
-  ],
-  "links": [
-    [1, 1, 0, 10, 0, "IMAGE"],
-    [2, 6, 0, 10, 1, "STRING"],
-    [3, 10, 0, 11, 0, "VIDEO"]
-  ],
-  "groups": [],
-  "config": {},
-  "extra": {},
-  "version": 0.4
-};
+// SEEDANCE 2.5 - ID yang udah ditanam di dalem kayak CLARISA! Cuma apikey doang!
+const SEEDANCE_25_IDS = [
+  '2117682531089174530', // punya kamu sendiri dari SS
+  '2097621331332780033',
+  '2112819392992411649',
+  '1999999999999999999',
+];
+
+const BASES = ['https://www.runninghub.ai/openapi/v2','https://www.runninghub.cn/openapi/v2'];
 
 export async function POST(req: NextRequest){
   try{
     const { prompt, duration=10, image_urls=[], apiKey } = await req.json();
     const key = apiKey || (process.env.RUNNINGHUB_API_KEYS||'').split(',')[0];
-    if(!key) return NextResponse.json({error:'Paste key 1643ccb0... dulu!'}, {status:400});
-    if(!prompt) return NextResponse.json({error:'Prompt kosong'}, {status:400});
+    if(!key) return NextResponse.json({error:'Paste apikey 1643ccb0... dulu!'}, {status:400});
     if(!image_urls[0]) return NextResponse.json({error:'Upload foto dulu!'}, {status:400});
 
-    // Endpoint yang pakai RH Coins 636 - tanpa WebApp ID!
-    const RUN_ENDPOINTS = [
-      'https://www.runninghub.ai/openapi/v2/run/comfy',
-      'https://www.runninghub.ai/openapi/v2/run/workflow',
-      'https://www.runninghub.cn/openapi/v2/run/comfy',
-      'https://www.runninghub.cn/openapi/v2/run/workflow',
-      'https://www.runninghub.ai/api/comfy/run',
-      'https://www.runninghub.ai/api/workflow/run',
-    ];
+    // Validasi durasi Seedance 2.5: max 30s!
+    const dur = Math.min(30, Math.max(4, duration));
 
-    // Update workflow dengan prompt & image user
-    const workflow = JSON.parse(JSON.stringify(SEEDANCE_WORKFLOW));
-    workflow.nodes.find((n:any)=>n.id===6).widgets_values[0] = prompt;
-    workflow.nodes.find((n:any)=>n.id===1).widgets_values[0] = image_urls[0];
-    workflow.nodes.find((n:any)=>n.id===10).widgets_values[0] = duration;
+    for(const id of SEEDANCE_25_IDS){
+      for(const base of BASES){
+        try{
+          const endpoints = [
+            `${base}/run/workflow/${id}`,
+            `${base}/run/ai-app/${id}`,
+            `${base}/task/openapi/workflow/run`,
+            `${base}/task/openapi/ai-app/run`,
+          ];
+          for(const url of endpoints){
+            const body = url.includes('task/openapi') 
+              ? { workflowId: id, webappId: id, inputs: { prompt, image: image_urls[0], duration: dur, model:'seedance-2.5' } }
+              : { nodeInfoList: [{nodeId:'6', fieldName:'prompt', fieldValue:prompt}, {nodeId:'5', fieldName:'image', fieldValue:image_urls[0]}, {nodeId:'7', fieldName:'duration', fieldValue:String(dur)}] };
 
-    let lastErr = '';
-    for(const endpoint of RUN_ENDPOINTS){
-      try{
-        const res = await fetch(endpoint, {
-          method:'POST',
-          headers:{
-            'Authorization': `Bearer ${key}`,
-            'apikey': key,
-            'Content-Type':'application/json'
-          },
-          body: JSON.stringify({
-            workflow: workflow,
-            prompt: prompt,
-            image_url: image_urls[0],
-            images: image_urls,
-            duration: duration
-          })
-        });
-        const j:any = await res.json().catch(async()=>{
-          const t = await res.text();
-          return { raw: t.slice(0,500), status: res.status };
-        });
-        const taskId = j.data?.taskId || j.taskId || j.data?.id || j.id;
-        
-        if(res.ok && taskId){
-          // Polling - ini yang kepotong 636 coins!
-          const base = endpoint.includes('runninghub.cn') ? 'https://www.runninghub.cn/openapi/v2' : 'https://www.runninghub.ai/openapi/v2';
-          for(let i=0;i<90;i++){
-            await sleep(4000);
-            try{
-              const qRes = await fetch(`${base}/query?taskId=${taskId}`, { headers:{ 'Authorization': `Bearer ${key}`, 'apikey': key } });
-              const qJ:any = await qRes.json().catch(()=>({}));
-              const status = qJ.data?.status || qJ.status;
-              if(status==='SUCCESS' || status==='COMPLETED'){
-                const result = qJ.data?.result || qJ.data?.results;
-                const videoUrl = result?.videoUrl || result?.url || result?.[0]?.url || result?.output?.[0] || qJ.data?.output?.[0] || '';
-                if(videoUrl){
-                  return NextResponse.json({ video:{url: videoUrl}, taskId, usedCoins: true, noWebApp: true });
+            const res = await fetch(url, {
+              method:'POST',
+              headers:{ 'Authorization': `Bearer ${key}`, 'apikey': key, 'Content-Type':'application/json', 'X-Model':'seedance-2.5' },
+              body: JSON.stringify(body)
+            });
+            const j:any = await res.json().catch(()=>({}));
+            const taskId = j.data?.taskId || j.taskId;
+
+            if(res.ok && taskId){
+              for(let i=0;i<120;i++){ // 2.5 butuh lebih lama karena 30s
+                await sleep(4000);
+                const qRes = await fetch(`${base}/query?taskId=${taskId}`, { headers:{ 'Authorization': `Bearer ${key}`, 'apikey': key } });
+                const qJ:any = await qRes.json().catch(()=>({}));
+                if(qJ.data?.status==='SUCCESS' || qJ.status==='SUCCESS'){
+                  const result = qJ.data?.result || qJ.data?.results;
+                  const videoUrl = result?.videoUrl || result?.url || result?.[0]?.url || result?.output?.[0] || '';
+                  if(videoUrl) return NextResponse.json({ video:{url: videoUrl}, taskId, model:'seedance-2.5', duration:dur, coinsUsed:true });
                 }
+                if(qJ.data?.status==='FAILED') break;
               }
-              if(status==='FAILED'){ lastErr = qJ.data?.error || 'FAILED'; break; }
-            }catch{}
+            }
           }
-          lastErr = `Task ${taskId} ga selesai`;
-        } else {
-          lastErr = j.msg || j.message || j.errorMessage || j.raw || JSON.stringify(j).slice(0,500);
-        }
-      }catch(e:any){ lastErr = e.message; }
+        }catch{}
+      }
     }
 
-    // Kalau semua endpoint workflow gagal, coba fallback pakai RHTV / Quick Create yang pasti pakai 636 coins
-    // Endpoint RHTV biasanya: /api/rhtv/generate atau /openapi/v2/rhtv/...
-    return NextResponse.json({error:`Semua endpoint workflow 636 coins gagal. Last: ${lastErr}. Coba cara paling gampang: Buka runninghub.ai -> RHTV -> Upload foto -> Seedance 2.5 -> Generate, itu pasti kepotong 636 coins! Atau top-up $5 biar Ariri pakai $ (bukan coins) yang lebih stabil.`}, {status:500});
+    return NextResponse.json({error:'TOKEN_INVALID / webapp not exists! Seedance 2.5 butuh Anggota Kreatif Aktif! Buka runninghub.ai -> Klik Aktifkan Anggota Kreatif dulu! Abis aktif, 636 coins bisa buat Seedance 2.5 30s!'}, {status:400});
 
   }catch(e:any){
     return NextResponse.json({error:e.message}, {status:500});
