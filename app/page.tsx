@@ -1,99 +1,142 @@
 "use client";
-import { useState, useEffect, useRef } from 'react';
 
-export default function AririSeedance25(){
-  const [prompt,setPrompt]=useState('Wanita cantik @img1 di Bali cinematic, Seedance 2.5 30s');
-  const [duration,setDuration]=useState(15);
-  const [imageUrl,setImageUrl]=useState('');
-  const [loading,setLoading]=useState(false);
-  const [status,setStatus]=useState<'idle'|'processing'|'success'|'failed'>('idle');
-  const [videoUrl,setVideoUrl]=useState('');
-  const [apiKey,setApiKey]=useState('');
-  const [showKey,setShowKey]=useState(false);
-  const [elapsed,setElapsed]=useState(0);
-  const timerRef=useRef<any>(null);
+import { useEffect, useRef, useState } from "react";
 
-  useEffect(()=>{ const k=localStorage.getItem('ariri_key'); if(k) setApiKey(k); },[]);
-  useEffect(()=>{ if(status==='processing'){ timerRef.current=setInterval(()=>setElapsed(e=>e+1),1000);} else clearInterval(timerRef.current); return()=>clearInterval(timerRef.current); },[status]);
-  const fmt=(s:number)=>`${Math.floor(s/60)}:${(s%60).toString().padStart(2,'0')}`;
+type UploadedImage = { url: string; name: string };
 
-  const saveKey=()=>{
-    if(apiKey.length<10){ alert('Paste apikey 32 karakter! 1643ccb0...'); return; }
-    localStorage.setItem('ariri_key', apiKey);
-    alert('✅ Key disimpan! Seedance 2.5 siap - cuma apikey doang!');
-  };
-  const handleFile=(files:FileList|null)=>{ if(!files?.[0]) return; setImageUrl(URL.createObjectURL(files[0])); };
-  const generate=async()=>{
-    if(!apiKey){ alert('Paste apikey dulu!'); return; }
-    if(!imageUrl){ alert('Upload foto dulu!'); return; }
-    setLoading(true); setStatus('processing'); setElapsed(0); setVideoUrl('');
-    try{
-      const res=await fetch('/api/generate',{method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ prompt, duration, image_urls:[imageUrl], apiKey })});
-      const data=await res.json();
-      if(!res.ok) throw new Error(data.error);
-      if(data.video?.url){ setVideoUrl(data.video.url); setStatus('success'); }
-      else throw new Error('No video');
-    }catch(e:any){ setStatus('failed'); alert('Error: '+e.message); }
-    finally{ setLoading(false); }
-  };
+export default function AririAI() {
+  const [prompt, setPrompt] = useState("");
+  const [seconds, setSeconds] = useState(5);
+  const [ratio, setRatio] = useState("16:9");
+  const [images, setImages] = useState<UploadedImage[]>([]);
+  const [uploading, setUploading] = useState(false);
+  const [generating, setGenerating] = useState(false);
+  const [status, setStatus] = useState("");
+  const [videoUrl, setVideoUrl] = useState("");
+  const [error, setError] = useState("");
+  const [elapsed, setElapsed] = useState(0);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (!generating) return;
+    const timer = window.setInterval(() => setElapsed((v) => v + 1), 1000);
+    return () => window.clearInterval(timer);
+  }, [generating]);
+
+  const formatTime = (value: number) => `${Math.floor(value / 60)}:${String(value % 60).padStart(2, "0")}`;
+
+  async function uploadFiles(files: FileList | null) {
+    if (!files?.length) return;
+    setError("");
+    const chosen = Array.from(files);
+    if (images.length + chosen.length > 5) {
+      setError("Maksimal 5 gambar referensi.");
+      return;
+    }
+    const form = new FormData();
+    chosen.forEach((file) => form.append("files", file));
+    setUploading(true);
+    try {
+      const response = await fetch("/api/upload", { method: "POST", body: form });
+      const data = await response.json();
+      if (!response.ok) throw new Error(data.error || "Upload gagal.");
+      setImages((current) => [...current, ...data.images]);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Upload gagal.");
+    } finally {
+      setUploading(false);
+      if (inputRef.current) inputRef.current.value = "";
+    }
+  }
+
+  async function generate() {
+    if (!prompt.trim()) { setError("Tulis prompt terlebih dahulu."); return; }
+    setError("");
+    setVideoUrl("");
+    setGenerating(true);
+    setElapsed(0);
+    setStatus("Mengirim permintaan ke Agnes...");
+    try {
+      const create = await fetch("/api/generate", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ prompt, seconds, aspect_ratio: ratio, images: images.map((image) => image.url) })
+      });
+      const created = await create.json();
+      if (!create.ok) throw new Error(created.error || "Gagal membuat tugas video.");
+      const id = created.video_id as string;
+
+      for (let attempt = 0; attempt < 90; attempt++) {
+        await new Promise((resolve) => window.setTimeout(resolve, 7000));
+        const check = await fetch(`/api/generate?video_id=${encodeURIComponent(id)}`, { cache: "no-store" });
+        const result = await check.json();
+        if (!check.ok) throw new Error(result.error || "Gagal memeriksa status video.");
+        const current = String(result.status || "processing").toLowerCase();
+        setStatus(current === "completed" ? "Video selesai." : "Sedang diproses Agnes...");
+        if (current === "completed" && result.url) {
+          setVideoUrl(result.url);
+          return;
+        }
+        if (current === "failed") throw new Error("Proses video gagal di sisi Agnes.");
+      }
+      throw new Error("Proses masih berjalan terlalu lama. Coba periksa lagi nanti.");
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Terjadi kesalahan.");
+    } finally {
+      setGenerating(false);
+    }
+  }
 
   return (
-    <div className="min-h-screen bg-[#080808] text-white">
-      <div className="bg-[#f5e6c8] text-black text-[11px] font-bold text-center py-2 tracking-widest">ARIRI STUDIO • SEEDANCE 2.5 • 30 DETIK • CUMA APIKEY • 636 COINS</div>
-      <header className="h-[64px] flex items-center justify-between px-6 bg-[#0f0f0f] border-b border-[#1e1e1e] sticky top-0 z-40">
-        <div className="flex items-center gap-3"><div className="w-9 h-9 rounded-xl bg-[#f5e6c8] text-black font-black flex items-center justify-center">2.5</div><div><div className="font-black tracking-wide">ARIRI STUDIO • SEEDANCE 2.5</div><div className="text-[10px] opacity-50">30 detik • Audio Native • Cuma Apikey • Kayak Clarisa</div></div></div>
+    <main className="min-h-screen bg-[#080808] text-white">
+      <header className="border-b border-white/10 bg-[#101010] px-5 py-5">
+        <div className="mx-auto flex max-w-6xl items-center justify-between">
+          <div><div className="text-xl font-black tracking-widest">ARIRI AI</div><div className="mt-1 text-xs text-white/50">AI VIDEO STUDIO</div></div>
+          <div className="rounded-full border border-[#d9c39a]/40 px-4 py-2 text-xs font-semibold text-[#e8d6b5]">2.5 Flash · 720P</div>
+        </div>
       </header>
-
-      <main className="max-w-[1200px] mx-auto p-6 grid md:grid-cols-[1.1fr_0.9fr] gap-6">
-        <div className="bg-[#111] border border-[#1e1e1e] rounded-[22px] p-6 space-y-5">
-          <div className="bg-[#f5e6c8]/10 border border-[#f5e6c8]/20 rounded-[16px] p-4">
-            <div className="text-[11px] font-black tracking-widest text-[#f5e6c8]">🔑 SEEDANCE 2.5 - CUMA APIKEY DOANG!</div>
-            <div className="text-[11px] opacity-70 mt-2">Seedance 2.5 bisa 4-30 detik + audio native! Cuma butuh apikey 1643ccb0... kayak Clarisa, langsung pakai 636 coins!</div>
-            <div className="flex gap-2 mt-3">
-              <input type={showKey?'text':'password'} value={apiKey} onChange={e=>setApiKey(e.target.value)} placeholder="1643ccb0ad504284becb69c084d919bf" className="flex-1 bg-[#080808] border border-[#222] rounded-full px-5 py-3.5 text-[13px] font-mono" />
-              <button onClick={()=>setShowKey(!showKey)} className="px-4 py-3.5 rounded-full bg-[#1a1a1a] border border-[#222] text-[12px]">{showKey?'Hide':'Show'}</button>
+      <div className="mx-auto grid max-w-6xl gap-6 p-5 md:grid-cols-[1.1fr_.9fr]">
+        <section className="space-y-6 rounded-3xl border border-white/10 bg-[#111] p-5 md:p-7">
+          <div><h1 className="text-lg font-bold">Buat video</h1><p className="mt-1 text-sm text-white/50">Model 2.5 Flash · Durasi 4–12 detik · Maksimal 5 gambar referensi</p></div>
+          <div>
+            <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-white/60">Gambar referensi ({images.length}/5)</label>
+            <div className="grid grid-cols-3 gap-3">
+              {images.map((image, index) => <div key={image.url} className="relative aspect-square overflow-hidden rounded-xl border border-white/10">
+                <img src={image.url} alt={image.name} className="h-full w-full object-cover" />
+                <button type="button" onClick={() => setImages((current) => current.filter((_, i) => i !== index))} className="absolute right-2 top-2 rounded-full bg-black/80 px-2 py-1 text-xs">×</button>
+              </div>)}
+              {images.length < 5 && <button type="button" onClick={() => inputRef.current?.click()} className="flex aspect-square flex-col items-center justify-center rounded-xl border border-dashed border-white/25 text-sm text-white/60 hover:border-[#e8d6b5]"> <span className="text-3xl">+</span><span>Tambah gambar</span></button>}
             </div>
-            <button onClick={saveKey} className="mt-3 w-full h-[46px] rounded-full bg-[#f5e6c8] text-black font-black text-[13px]">💾 Simpan Key - Seedance 2.5</button>
-            {apiKey && <div className="mt-2 text-[11px] text-green-400">✅ {apiKey.slice(0,8)}*** siap - Seedance 2.5 30s! 636 coins!</div>}
+            <input ref={inputRef} type="file" accept="image/jpeg,image/png,image/webp" multiple className="hidden" onChange={(event) => uploadFiles(event.target.files)} />
+            <p className="mt-2 text-xs text-white/40">JPG, PNG, WEBP · Maksimal 10 MB per gambar.</p>
+            {uploading && <p className="mt-2 text-xs text-[#e8d6b5]">Mengunggah gambar...</p>}
           </div>
-
           <div>
-            <label className="text-[11px] font-bold tracking-widest opacity-60">UPLOAD FOTO (@img1) - Seedance 2.5</label>
-            <label className="mt-3 w-full aspect-[16/10] rounded-[18px] border-2 border-dashed border-[#222] bg-[#080808] flex flex-col items-center justify-center cursor-pointer overflow-hidden">
-              {imageUrl ? <img src={imageUrl} className="w-full h-full object-cover" /> : <><span className="text-3xl opacity-20">+</span><span className="text-[11px] mt-2 opacity-40">Klik upload foto ref</span></>}
-              <input type="file" accept="image/*" className="hidden" onChange={e=>handleFile(e.target.files)} />
-            </label>
+            <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-white/60">Prompt</label>
+            <textarea value={prompt} onChange={(event) => setPrompt(event.target.value)} maxLength={2000} placeholder="Jelaskan adegan, gerakan, kamera, suasana, dan detail video..." className="min-h-36 w-full rounded-2xl border border-white/10 bg-[#080808] p-4 text-sm outline-none focus:border-[#e8d6b5]" />
+            <div className="mt-1 text-right text-xs text-white/35">{prompt.length}/2000</div>
           </div>
-
-          <div>
-            <label className="text-[11px] font-bold tracking-widest opacity-60">PROMPT - Seedance 2.5</label>
-            <textarea value={prompt} onChange={e=>setPrompt(e.target.value)} className="mt-3 w-full bg-[#080808] border border-[#1e1e1e] rounded-[16px] p-4 text-[13px] min-h-[100px]" />
+          <div className="grid gap-4 sm:grid-cols-2">
+            <div><label className="mb-2 block text-xs font-bold uppercase tracking-wider text-white/60">Durasi</label>
+              <select value={seconds} onChange={(event) => setSeconds(Number(event.target.value))} className="w-full rounded-xl border border-white/10 bg-[#080808] p-3 text-sm">{[4,5,6,7,8,9,10,11,12].map((v) => <option key={v} value={v}>{v} detik</option>)}</select>
+            </div>
+            <div><label className="mb-2 block text-xs font-bold uppercase tracking-wider text-white/60">Rasio</label>
+              <select value={ratio} onChange={(event) => setRatio(event.target.value)} className="w-full rounded-xl border border-white/10 bg-[#080808] p-3 text-sm"><option>16:9</option><option>9:16</option><option>1:1</option><option>4:3</option><option>3:4</option><option>21:9</option></select>
+            </div>
           </div>
-
-          <div>
-            <label className="text-[11px] font-bold tracking-widest opacity-60">DURASI SEEDANCE 2.5: {duration}s {duration<=15?'(2.0 style)':'(2.5 30s)'} - 636 coins</label>
-            <input type="range" min={4} max={30} value={duration} onChange={e=>setDuration(parseInt(e.target.value))} className="w-full accent-[#f5e6c8] mt-3" />
-            <div className="flex justify-between text-[10px] opacity-40 mt-1"><span>4s</span><span>15s (2.0)</span><span>30s (2.5 Pro)</span></div>
+          <button type="button" onClick={generate} disabled={generating || uploading || !prompt.trim()} className="w-full rounded-full bg-[#e8d6b5] px-5 py-4 font-bold text-black disabled:cursor-not-allowed disabled:opacity-40">{generating ? "Memproses..." : "Generate video"}</button>
+          {generating && <p className="text-center text-xs text-white/50">{status} · {formatTime(elapsed)}</p>}
+          {error && <p role="alert" className="rounded-xl border border-red-500/30 bg-red-500/10 p-3 text-sm text-red-200">{error}</p>}
+        </section>
+        <section className="min-h-[420px] rounded-3xl border border-white/10 bg-[#111] p-5 md:p-7">
+          <h2 className="text-sm font-bold uppercase tracking-wider text-white/60">Preview</h2>
+          <div className="mt-4 flex min-h-[340px] items-center justify-center rounded-2xl bg-black p-3">
+            {videoUrl ? <div className="w-full"><video src={videoUrl} controls playsInline className="w-full rounded-xl" /><a href={videoUrl} target="_blank" rel="noreferrer" className="mt-4 block rounded-full bg-[#e8d6b5] p-3 text-center text-sm font-bold text-black">Buka / simpan video</a></div> : <div className="text-center text-sm text-white/35">{generating ? "Video sedang dibuat..." : "Hasil video akan muncul di sini."}</div>}
           </div>
-
-          <button onClick={generate} disabled={loading} className="w-full h-[56px] rounded-full bg-[#f5e6c8] text-black font-black text-[15px] disabled:opacity-50">
-            {loading ? `Membuat Seedance 2.5... ${fmt(elapsed)} - 636 coins` : `✨ Generate Seedance 2.5 ${duration}s - Cuma Apikey!`}
-          </button>
-        </div>
-
-        <div className="bg-[#111] border border-[#1e1e1e] rounded-[22px] p-4">
-          <div className="text-[11px] font-bold tracking-widest opacity-60">PREVIEW SEEDANCE 2.5 • {status.toUpperCase()} • {fmt(elapsed)}</div>
-          <div className="bg-[#050505] border border-[#151515] rounded-[18px] min-h-[400px] flex items-center justify-center p-6 mt-3">
-            {status==='idle' && <div className="text-center opacity-30">🎬<div className="mt-3 text-[13px]">Seedance 2.5<br/>4-30 detik + audio<br/>Cuma apikey!</div></div>}
-            {status==='processing' && <div className="text-center"><div className="w-[88px] h-[88px] mx-auto rounded-full border-2 border-[#1e1e1e] border-t-[#f5e6c8] animate-spin"></div><div className="mt-6 font-bold">Seedance 2.5 {duration}s...</div><div className="mt-2 text-[12px] opacity-50">{fmt(elapsed)} • 636 coins • {duration}s</div></div>}
-            {status==='failed' && <div className="text-center"><div className="text-2xl">!</div><div className="mt-3 font-bold">Gagal - cek alert</div></div>}
-            {status==='success' && videoUrl && <div className="w-full"><video src={videoUrl} controls autoPlay className="w-full rounded-[16px] max-h-[300px] bg-black" /><a href={videoUrl} target="_blank" className="mt-4 h-[46px] rounded-full bg-[#f5e6c8] text-black font-black flex items-center justify-center text-[14px]">⬇ Download Seedance 2.5 MP4</a><button onClick={()=>{navigator.clipboard.writeText(videoUrl); alert('Link copied!');}} className="mt-3 w-full h-[44px] rounded-full bg-[#1a1a1a] border border-[#222] font-bold text-[13px]">📋 Copy Link</button></div>}
-          </div>
-          <div className="mt-4 bg-[#f5e6c8]/10 border border-[#f5e6c8]/20 rounded-[12px] p-3 text-[11px]">
-            💡 <b>Seedance 2.5</b> bisa 30s + audio native! Kayak Clarisa tapi ini 2.5! Cuma apikey doang, ID nya udah di dalem!
-          </div>
-        </div>
-      </main>
-    </div>
+          <p className="mt-4 text-xs leading-5 text-white/40">Kunci API disimpan di server melalui Vercel Environment Variables, bukan di browser.</p>
+        </section>
+      </div>
+      <footer className="pb-8 text-center text-xs text-white/30">ARIRI AI © 2026</footer>
+    </main>
   );
 }
