@@ -24,15 +24,13 @@ export default function AririAI() {
   }, [generating]);
 
   const formatTime = (value: number) => `${Math.floor(value / 60)}:${String(value % 60).padStart(2, "0")}`;
+  const wait = (ms: number) => new Promise((resolve) => window.setTimeout(resolve, ms));
 
   async function uploadFiles(files: FileList | null) {
     if (!files?.length) return;
     setError("");
     const chosen = Array.from(files);
-    if (images.length + chosen.length > 5) {
-      setError("Maksimal 5 gambar referensi.");
-      return;
-    }
+    if (images.length + chosen.length > 5) { setError("Maksimal 5 gambar referensi."); return; }
     const form = new FormData();
     chosen.forEach((file) => form.append("files", file));
     setUploading(true);
@@ -51,40 +49,42 @@ export default function AririAI() {
 
   async function generate() {
     if (!prompt.trim()) { setError("Tulis prompt terlebih dahulu."); return; }
-    setError("");
-    setVideoUrl("");
-    setGenerating(true);
-    setElapsed(0);
-    setStatus("Mengirim permintaan ke Agnes...");
+    setError(""); setVideoUrl(""); setGenerating(true); setElapsed(0);
     try {
-      const create = await fetch("/api/generate", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ prompt, seconds, aspect_ratio: ratio, images: images.map((image) => image.url) })
-      });
-      const created = await create.json();
-      if (!create.ok) throw new Error(created.error || "Gagal membuat tugas video.");
-      const id = created.video_id as string;
+      let created: any = null;
+      const retryDelays = [30000, 60000, 120000];
+      for (let attempt = 0; attempt <= retryDelays.length; attempt++) {
+        setStatus(attempt === 0 ? "Mengirim permintaan ke Agnes..." : `Antrean Agnes penuh. Mencoba lagi otomatis (${attempt}/${retryDelays.length})...`);
+        const response = await fetch("/api/generate", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ prompt, seconds, aspect_ratio: ratio, images: images.map((image) => image.url) })
+        });
+        const data = await response.json();
+        if (response.ok) { created = data; break; }
+        if (!data.retryable || attempt === retryDelays.length) throw new Error(data.error || "Gagal membuat tugas video.");
+        const delay = retryDelays[attempt];
+        setStatus(`Antrean Agnes sedang penuh. Mencoba ulang dalam ${Math.round(delay / 1000)} detik...`);
+        await wait(delay);
+      }
 
+      if (!created?.video_id) throw new Error("Agnes belum menerima tugas video. Coba lagi nanti.");
+      const id = created.video_id as string;
+      setStatus("Permintaan diterima. Video sedang diproses...");
       for (let attempt = 0; attempt < 90; attempt++) {
-        await new Promise((resolve) => window.setTimeout(resolve, 7000));
+        await wait(7000);
         const check = await fetch(`/api/generate?video_id=${encodeURIComponent(id)}`, { cache: "no-store" });
         const result = await check.json();
         if (!check.ok) throw new Error(result.error || "Gagal memeriksa status video.");
         const current = String(result.status || "processing").toLowerCase();
         setStatus(current === "completed" ? "Video selesai." : "Sedang diproses Agnes...");
-        if (current === "completed" && result.url) {
-          setVideoUrl(result.url);
-          return;
-        }
+        if (current === "completed" && result.url) { setVideoUrl(result.url); return; }
         if (current === "failed") throw new Error("Proses video gagal di sisi Agnes.");
       }
       throw new Error("Proses masih berjalan terlalu lama. Coba periksa lagi nanti.");
     } catch (e) {
       setError(e instanceof Error ? e.message : "Terjadi kesalahan.");
-    } finally {
-      setGenerating(false);
-    }
+    } finally { setGenerating(false); }
   }
 
   return (
@@ -101,11 +101,8 @@ export default function AririAI() {
           <div>
             <label className="mb-2 block text-xs font-bold uppercase tracking-wider text-white/60">Gambar referensi ({images.length}/5)</label>
             <div className="grid grid-cols-3 gap-3">
-              {images.map((image, index) => <div key={image.url} className="relative aspect-square overflow-hidden rounded-xl border border-white/10">
-                <img src={image.url} alt={image.name} className="h-full w-full object-cover" />
-                <button type="button" onClick={() => setImages((current) => current.filter((_, i) => i !== index))} className="absolute right-2 top-2 rounded-full bg-black/80 px-2 py-1 text-xs">×</button>
-              </div>)}
-              {images.length < 5 && <button type="button" onClick={() => inputRef.current?.click()} className="flex aspect-square flex-col items-center justify-center rounded-xl border border-dashed border-white/25 text-sm text-white/60 hover:border-[#e8d6b5]"> <span className="text-3xl">+</span><span>Tambah gambar</span></button>}
+              {images.map((image, index) => <div key={image.url} className="relative aspect-square overflow-hidden rounded-xl border border-white/10"><img src={image.url} alt={image.name} className="h-full w-full object-cover" /><button type="button" onClick={() => setImages((current) => current.filter((_, i) => i !== index))} className="absolute right-2 top-2 rounded-full bg-black/80 px-2 py-1 text-xs">×</button></div>)}
+              {images.length < 5 && <button type="button" onClick={() => inputRef.current?.click()} className="flex aspect-square flex-col items-center justify-center rounded-xl border border-dashed border-white/25 text-sm text-white/60 hover:border-[#e8d6b5]"><span className="text-3xl">+</span><span>Tambah gambar</span></button>}
             </div>
             <input ref={inputRef} type="file" accept="image/jpeg,image/png,image/webp" multiple className="hidden" onChange={(event) => uploadFiles(event.target.files)} />
             <p className="mt-2 text-xs text-white/40">JPG, PNG, WEBP · Maksimal 10 MB per gambar.</p>
@@ -117,12 +114,8 @@ export default function AririAI() {
             <div className="mt-1 text-right text-xs text-white/35">{prompt.length}/2000</div>
           </div>
           <div className="grid gap-4 sm:grid-cols-2">
-            <div><label className="mb-2 block text-xs font-bold uppercase tracking-wider text-white/60">Durasi</label>
-              <select value={seconds} onChange={(event) => setSeconds(Number(event.target.value))} className="w-full rounded-xl border border-white/10 bg-[#080808] p-3 text-sm">{[4,5,6,7,8,9,10,11,12].map((v) => <option key={v} value={v}>{v} detik</option>)}</select>
-            </div>
-            <div><label className="mb-2 block text-xs font-bold uppercase tracking-wider text-white/60">Rasio</label>
-              <select value={ratio} onChange={(event) => setRatio(event.target.value)} className="w-full rounded-xl border border-white/10 bg-[#080808] p-3 text-sm"><option>16:9</option><option>9:16</option><option>1:1</option><option>4:3</option><option>3:4</option><option>21:9</option></select>
-            </div>
+            <div><label className="mb-2 block text-xs font-bold uppercase tracking-wider text-white/60">Durasi</label><select value={seconds} onChange={(event) => setSeconds(Number(event.target.value))} className="w-full rounded-xl border border-white/10 bg-[#080808] p-3 text-sm">{[4,5,6,7,8,9,10,11,12].map((v) => <option key={v} value={v}>{v} detik</option>)}</select></div>
+            <div><label className="mb-2 block text-xs font-bold uppercase tracking-wider text-white/60">Rasio</label><select value={ratio} onChange={(event) => setRatio(event.target.value)} className="w-full rounded-xl border border-white/10 bg-[#080808] p-3 text-sm"><option>16:9</option><option>9:16</option><option>1:1</option><option>4:3</option><option>3:4</option><option>21:9</option></select></div>
           </div>
           <button type="button" onClick={generate} disabled={generating || uploading || !prompt.trim()} className="w-full rounded-full bg-[#e8d6b5] px-5 py-4 font-bold text-black disabled:cursor-not-allowed disabled:opacity-40">{generating ? "Memproses..." : "Generate video"}</button>
           {generating && <p className="text-center text-xs text-white/50">{status} · {formatTime(elapsed)}</p>}
